@@ -1,0 +1,341 @@
+<!-- Run: open physics-simulation.html in a browser (double-click it or use `open physics-simulation.html`). No server or install required. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Physics Simulation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1020; font-family: system-ui, -apple-system, sans-serif; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #ui {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+    #ui .panel {
+      pointer-events: auto;
+      background: rgba(12, 18, 36, 0.82);
+      border: 1px solid rgba(140, 170, 255, 0.25);
+      border-radius: 12px;
+      padding: 14px 16px;
+      color: #e8eefc;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(8px);
+      max-width: 280px;
+    }
+    #ui h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      margin-bottom: 6px;
+    }
+    #ui p {
+      font-size: 12px;
+      line-height: 1.45;
+      color: #a8b4d0;
+      margin-bottom: 12px;
+    }
+    #ui .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    #ui button {
+      appearance: none;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #0b1020;
+      background: linear-gradient(180deg, #9ec1ff, #6f97ff);
+      transition: transform 0.12s ease, filter 0.12s ease;
+    }
+    #ui button:hover { filter: brightness(1.08); }
+    #ui button:active { transform: translateY(1px); }
+    #ui button.secondary {
+      background: linear-gradient(180deg, #d6e0ff, #b4c4f5);
+    }
+    #ui .stats {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #c5d0ea;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div class="panel">
+      <h1>3D Physics Playground</h1>
+      <p>Drag to orbit, scroll to zoom, right-drag to pan. Objects fall under gravity and collide with the ground and each other.</p>
+      <div class="buttons">
+        <button id="btn-reset" type="button">Reset</button>
+        <button id="btn-drop" type="button" class="secondary">Drop object</button>
+        <button id="btn-rain" type="button" class="secondary">Drop 5</button>
+      </div>
+      <div class="stats" id="stats">Objects: 0</div>
+    </div>
+  </div>
+
+  <!-- Import map so bare "three" / "three/addons/..." and "cannon-es" resolve from CDN -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+      "cannon-es": "https://unpkg.com/cannon-es@0.20.0/dist/cannon-es.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import * as CANNON from 'cannon-es';
+
+    // --- Renderer / scene / camera ---
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.setClearColor(0x0b1020, 1);
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x0b1020, 28, 70);
+
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+    camera.position.set(10, 9, 14);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.target.set(0, 2, 0);
+    controls.maxPolarAngle = Math.PI * 0.49;
+    controls.minDistance = 4;
+    controls.maxDistance = 40;
+
+    // --- Lights ---
+    scene.add(new THREE.AmbientLight(0x6b7bb0, 0.45));
+
+    const key = new THREE.DirectionalLight(0xffffff, 1.15);
+    key.position.set(8, 16, 6);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.camera.near = 1;
+    key.shadow.camera.far = 40;
+    key.shadow.camera.left = -16;
+    key.shadow.camera.right = 16;
+    key.shadow.camera.top = 16;
+    key.shadow.camera.bottom = -16;
+    scene.add(key);
+
+    const fill = new THREE.DirectionalLight(0x88aaff, 0.35);
+    fill.position.set(-10, 6, -8);
+    scene.add(fill);
+
+    // --- Physics world ---
+    const world = new CANNON.World({
+      gravity: new CANNON.Vec3(0, -9.82, 0),
+    });
+    // Sweep-and-prune broadphase + moderate solver iterations for stable stacking
+    world.broadphase = new CANNON.SAPBroadphase(world);
+    world.allowSleep = true;
+    world.solver.iterations = 12;
+
+    const defaultMat = new CANNON.Material('default');
+    const groundMat = new CANNON.Material('ground');
+    world.addContactMaterial(new CANNON.ContactMaterial(defaultMat, groundMat, {
+      friction: 0.45,
+      restitution: 0.35,
+    }));
+    world.addContactMaterial(new CANNON.ContactMaterial(defaultMat, defaultMat, {
+      friction: 0.3,
+      restitution: 0.45,
+    }));
+
+    // Ground: large static plane + visual mesh
+    const groundBody = new CANNON.Body({
+      type: CANNON.Body.STATIC,
+      shape: new CANNON.Plane(),
+      material: groundMat,
+    });
+    // Cannon planes face +Z by default; rotate so normal points +Y
+    groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    world.addBody(groundBody);
+
+    const groundMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(40, 40),
+      new THREE.MeshStandardMaterial({
+        color: 0x1a2744,
+        roughness: 0.9,
+        metalness: 0.05,
+      })
+    );
+    groundMesh.rotation.x = -Math.PI / 2;
+    groundMesh.receiveShadow = true;
+    scene.add(groundMesh);
+
+    // Subtle grid for spatial reference
+    const grid = new THREE.GridHelper(40, 40, 0x3a4d7a, 0x22304f);
+    grid.position.y = 0.01;
+    scene.add(grid);
+
+    // Pair mesh + body so we can sync transforms each frame
+    /** @type {{ mesh: THREE.Mesh, body: CANNON.Body }[]} */
+    const objects = [];
+
+    const palette = [0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xc77dff, 0xff9f1c, 0x2ec4b6];
+
+    function randomColor() {
+      return palette[Math.floor(Math.random() * palette.length)];
+    }
+
+    function addSphere(x, y, z, radius = 0.45 + Math.random() * 0.35) {
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 28, 20),
+        new THREE.MeshStandardMaterial({
+          color: randomColor(),
+          roughness: 0.35,
+          metalness: 0.15,
+        })
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.position.set(x, y, z);
+      scene.add(mesh);
+
+      const body = new CANNON.Body({
+        mass: (4 / 3) * Math.PI * radius ** 3 * 1.2,
+        shape: new CANNON.Sphere(radius),
+        position: new CANNON.Vec3(x, y, z),
+        material: defaultMat,
+        linearDamping: 0.05,
+        angularDamping: 0.08,
+      });
+      // Small random spin so stacks don't look perfectly artificial
+      body.angularVelocity.set(
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.5) * 2
+      );
+      world.addBody(body);
+      objects.push({ mesh, body });
+      updateStats();
+    }
+
+    function addBox(x, y, z, size = 0.5 + Math.random() * 0.5) {
+      const half = size / 2;
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(size, size, size),
+        new THREE.MeshStandardMaterial({
+          color: randomColor(),
+          roughness: 0.45,
+          metalness: 0.1,
+        })
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.position.set(x, y, z);
+      scene.add(mesh);
+
+      const body = new CANNON.Body({
+        mass: size ** 3 * 1.4,
+        shape: new CANNON.Box(new CANNON.Vec3(half, half, half)),
+        position: new CANNON.Vec3(x, y, z),
+        material: defaultMat,
+        linearDamping: 0.05,
+        angularDamping: 0.1,
+      });
+      body.quaternion.setFromEuler(
+        Math.random() * Math.PI,
+        Math.random() * Math.PI,
+        Math.random() * Math.PI
+      );
+      world.addBody(body);
+      objects.push({ mesh, body });
+      updateStats();
+    }
+
+    function dropObject(count = 1) {
+      for (let i = 0; i < count; i++) {
+        const x = (Math.random() - 0.5) * 6;
+        const y = 6 + Math.random() * 4 + i * 0.6;
+        const z = (Math.random() - 0.5) * 6;
+        if (Math.random() < 0.5) addSphere(x, y, z);
+        else addBox(x, y, z);
+      }
+    }
+
+    function clearObjects() {
+      for (const { mesh, body } of objects) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+        else mesh.material.dispose();
+        world.removeBody(body);
+      }
+      objects.length = 0;
+      updateStats();
+    }
+
+    function resetSimulation() {
+      clearObjects();
+      // Seed scene with a mix of shapes so something interesting is visible immediately
+      for (let i = 0; i < 12; i++) {
+        const x = (Math.random() - 0.5) * 5;
+        const y = 2 + i * 0.85 + Math.random() * 0.4;
+        const z = (Math.random() - 0.5) * 5;
+        if (i % 2 === 0) addSphere(x, y, z);
+        else addBox(x, y, z);
+      }
+    }
+
+    function updateStats() {
+      document.getElementById('stats').textContent = `Objects: ${objects.length}`;
+    }
+
+    document.getElementById('btn-reset').addEventListener('click', resetSimulation);
+    document.getElementById('btn-drop').addEventListener('click', () => dropObject(1));
+    document.getElementById('btn-rain').addEventListener('click', () => dropObject(5));
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Fixed-timestep physics; render can run at display rate
+    const fixedTimeStep = 1 / 60;
+    const maxSubSteps = 5;
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.05);
+      world.step(fixedTimeStep, dt, maxSubSteps);
+
+      for (const { mesh, body } of objects) {
+        mesh.position.copy(body.position);
+        mesh.quaternion.copy(body.quaternion);
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    resetSimulation();
+    animate();
+  </script>
+</body>
+</html>
