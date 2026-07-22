@@ -4,7 +4,7 @@
     "name": "blockchainian"
   },
   "metadata": {
-    "description": "Claude Code plugin marketplace for using the local Grok CLI for review and task delegation.",
+    "description": "Claude Code plugin marketplace for blockchainian's plugins: Grok and Codex review/task-delegation tooling.",
     "version": "0.1.0"
   },
   "plugins": [
@@ -16,6 +16,18 @@
         "name": "blockchainian"
       },
       "source": "./plugins/grok"
+    },
+    {
+      "name": "codex",
+      "description": "Execute a planned feature as parallel codex tasks off Claude's critical path \u2014 from a plan to a pushed branch, codex-reviewed, with one PR.",
+      "version": "0.2.0",
+      "author": {
+        "name": "blockchainian"
+      },
+      "source": {
+        "source": "github",
+        "repo": "blockchainian/codex-plugin-cc"
+      }
     }
   ]
 }
